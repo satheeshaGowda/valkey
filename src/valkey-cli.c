@@ -1354,19 +1354,36 @@ static int matchArg(char **nextword, int numwords, cliCommandArg *arg) {
  * any one of a consecutive set of optional arguments.
  */
 static int matchOneOptionalArg(char **words, int numwords, cliCommandArg *args, int numargs, int *matchedarg) {
-    for (int nextword = 0, nextarg = 0; nextword != numwords && nextarg != numargs; ++nextarg) {
-        if (args[nextarg].matched) {
-            /* Already matched this arg. */
-            continue;
-        }
+    int j, best_match_idx = -1, best_words = 0;
+    int best_match_type = 0;
 
-        int matchedWords = matchArg(&words[nextword], numwords - nextword, &args[nextarg]);
-        if (matchedWords != 0) {
-            *matchedarg = nextarg;
-            return matchedWords;
+    for (j = 0; j < numargs; j++) {
+        if (args[j].matched) continue;
+
+        int matched_words = matchArg(words, numwords, &args[j]);
+        if (matched_words > best_words) {
+            best_words = matched_words;
+            best_match_idx = j;
+            best_match_type = args[j].type;
+        } else if (matched_words == best_words && best_words > 0) {
+            /* When there is ambiguity, we prefer token-based arguments.
+             * That is, "MSET key value EX" should be matched as
+             * "key value" and "EX" and not "key" and "value" and "key".
+             * The EX argument is a oneof, while the key-value is a block. */
+            if (best_match_type == ARG_TYPE_BLOCK && args[best_match_idx].token == NULL && args[j].token != NULL) {
+                best_match_idx = j;
+                best_match_type = args[j].type;
+            }
         }
+        /* Reset the matched flags for the next iteration. */
+        clearMatchedArgs(&args[j], 1);
     }
-    return 0;
+
+    if (best_match_idx != -1) {
+        matchArg(words, numwords, &args[best_match_idx]);
+        *matchedarg = best_match_idx;
+    }
+    return best_words;
 }
 
 /* Matches as many input words as possible against a set of consecutive optional arguments. */

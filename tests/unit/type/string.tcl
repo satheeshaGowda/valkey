@@ -281,6 +281,103 @@ start_server {tags {"string"}} {
         list [r msetnx x1{t} xxx x1{t} zzz] [r get x1{t}]
     } {0 yyy}
 
+    test {MSET with EX option} {
+        r del x{t} y{t}
+        r mset x{t} 10 y{t} 20 ex 10
+        list [r get x{t}] [r get y{t}] [expr [r ttl x{t}] > 5] [expr [r ttl y{t}] > 5]
+    } {10 20 1 1}
+
+    test {MSET with PX option} {
+        r del x{t} y{t}
+        r mset x{t} foo y{t} bar px 10000
+        list [r get x{t}] [r get y{t}] [expr [r pttl x{t}] > 5000] [expr [r pttl y{t}] > 5000]
+    } {foo bar 1 1}
+
+    test {MSET with EXAT option} {
+        r del x{t} y{t}
+        set future_time [expr [clock seconds] + 10]
+        r mset x{t} hello y{t} world exat $future_time
+        list [r get x{t}] [r get y{t}] [expr [r ttl x{t}] > 5] [expr [r ttl y{t}] > 5]
+    } {hello world 1 1}
+
+    test {MSET with PXAT option} {
+        r del x{t} y{t}
+        set future_time [expr [clock milliseconds] + 10000]
+        r mset x{t} test1 y{t} test2 pxat $future_time
+        list [r get x{t}] [r get y{t}] [expr [r pttl x{t}] > 5000] [expr [r pttl y{t}] > 5000]
+    } {test1 test2 1 1}
+
+    test {MSET with expiration - single key} {
+        r del single{t}
+        r mset single{t} value ex 5
+        list [r get single{t}] [expr [r ttl single{t}] > 0]
+    } {value 1}
+
+    test {MSET backward compatibility - no expiration} {
+        r del a{t} b{t} c{t}
+        r mset a{t} 1 b{t} 2 c{t} 3
+        list [r get a{t}] [r get b{t}] [r get c{t}] [r ttl a{t}] [r ttl b{t}] [r ttl c{t}]
+    } {1 2 3 -1 -1 -1}
+
+    test {MSET with expiration syntax errors} {
+        set e1 {}
+        set e2 {}
+        set e3 {}
+        set e4 {}
+        catch {r mset x{t} val ex} e1
+        catch {r mset x{t} val px abc} e2
+        catch {r mset x{t} val exat} e3
+        list [string match "*syntax*" $e1] [string match "*not an integer*" $e2] [string match "*syntax*" $e3]
+    } {1 1 1}
+
+    test {MSET with expiration - negative values} {
+        set e1 {}
+        set e2 {}
+        catch {r mset x{t} val ex -1} e1
+        catch {r mset x{t} val px -1000} e2
+        list [string match "*invalid expire time*" $e1] [string match "*invalid expire time*" $e2]
+    } {1 1}
+
+    test {MSET with EXAT/PXAT in the past} {
+        r del x{t} y{t}
+        set past_time [expr [clock seconds] - 100]
+        set past_millis [expr [clock milliseconds] - 10000]
+        
+        r mset x{t} expired1 exat $past_time
+        r mset y{t} expired2 pxat $past_millis
+        
+        list [r exists x{t}] [r exists y{t}]
+    } {0 0}
+
+    test {MSET with expiration - wrong number of args} {
+        assert_error {*wrong number of arguments*} {r mset x{t} val y{t}}
+        assert_error {*wrong number of arguments*} {r mset x{t}}
+        assert_error {*syntax*} {r mset x{t} val ex 10 px 1000}
+    }
+
+    test {MSET with expiration - large number of keys} {
+        r del k1{t} k2{t} k3{t} k4{t} k5{t}
+        r mset k1{t} v1 k2{t} v2 k3{t} v3 k4{t} v4 k5{t} v5 ex 30
+        set all_exist [expr [r exists k1{t}] && [r exists k2{t}] && [r exists k3{t}] && [r exists k4{t}] && [r exists k5{t}]]
+        set all_expire [expr [r ttl k1{t}] > 20 && [r ttl k2{t}] > 20 && [r ttl k3{t}] > 20 && [r ttl k4{t}] > 20 && [r ttl k5{t}] > 20]
+        list $all_exist $all_expire [r get k3{t}]
+    } {1 1 v3}
+
+    test {MSET expiration replaces existing expiration} {
+        r del x{t}
+        r set x{t} initial ex 60
+        assert_range [r ttl x{t}] 50 60
+        r mset x{t} updated ex 10
+        assert_range [r ttl x{t}] 5 10
+        assert_equal "updated" [r get x{t}]
+    }
+
+    test {MSET with expiration - same key multiple times} {
+        r del x{t}
+        r mset x{t} first x{t} second x{t} final ex 15
+        list [r get x{t}] [expr [r ttl x{t}] > 10]
+    } {final 1}
+
     test "STRLEN against non-existing key" {
         assert_equal 0 [r strlen notakey]
     }

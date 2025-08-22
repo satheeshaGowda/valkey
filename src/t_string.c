@@ -34,6 +34,7 @@
 
 #include "server.h"
 #include <math.h> /* isnan(), isinf() */
+#include <ctype.h> /* isalpha() */
 
 /* Forward declarations */
 int getGenericCommand(client *c);
@@ -513,18 +514,126 @@ void mgetCommand(client *c) {
     }
 }
 
-void msetGenericCommand(client *c, int nx) {
-    int j;
+/* Helper structure for MSET expiration parsing */
+typedef struct {
+    int flags;
+    int unit;
+    robj *expire_obj;
+    int has_expiration;
+} mset_expiration_t;
 
-    if ((c->argc % 2) == 0) {
+/* Parse MSET expiration arguments safely and efficiently */
+static int parseMsetExpiration(client *c, mset_expiration_t *exp) {
+    exp->flags = ARGS_NO_FLAGS;
+    exp->expire_obj = NULL;
+    exp->has_expiration = 0;
+    exp->unit = UNIT_SECONDS;
+
+    /* Check for incomplete expiration syntax first */
+    if (c->argc == 4) {
+        char *last_arg = c->argv[c->argc - 1]->ptr;
+        if (!strcasecmp(last_arg, "EX") || !strcasecmp(last_arg, "PX") ||
+            !strcasecmp(last_arg, "EXAT") || !strcasecmp(last_arg, "PXAT")) {
+            addReplyErrorFormat(c, "syntax error");
+            return C_ERR;
+        }
+        return C_OK; /* No expiration args, but valid */
+    }
+
+    /* Need at least 5 args for complete expiration: MSET key value OPTION value */
+    if (c->argc < 5 || (c->argc % 2) == 0) {
+        return C_OK; /* No expiration args */
+    }
+
+    char *opt = c->argv[c->argc - 2]->ptr;
+
+    if (!strcasecmp(opt, "EX")) {
+        exp->flags = ARGS_EX;
+        exp->unit = UNIT_SECONDS;
+        exp->has_expiration = 1;
+    } else if (!strcasecmp(opt, "PX")) {
+        exp->flags = ARGS_PX;
+        exp->unit = UNIT_MILLISECONDS;
+        exp->has_expiration = 1;
+    } else if (!strcasecmp(opt, "EXAT")) {
+        exp->flags = ARGS_EXAT;
+        exp->unit = UNIT_SECONDS;
+        exp->has_expiration = 1;
+    } else if (!strcasecmp(opt, "PXAT")) {
+        exp->flags = ARGS_PXAT;
+        exp->unit = UNIT_MILLISECONDS;
+        exp->has_expiration = 1;
+    } else {
+        /* Check if this looks like an invalid expiration option */
+        if (c->argc == 5) {
+            /* Pattern: MSET key value option possible_value */
+            char *second_last_arg = c->argv[c->argc - 2]->ptr;
+            char *last_arg = c->argv[c->argc - 1]->ptr;
+            char *endptr;
+            strtoll(last_arg, &endptr, 10);
+
+            /* If last arg looks like a number and second-to-last arg looks like an option name */
+            if (*endptr == '\0') {
+                /* Check if second-to-last arg looks like an option (all alphabetic) */
+                int looks_like_option = 1;
+                for (char *p = second_last_arg; *p; p++) {
+                    if (!isalpha(*p)) {
+                        looks_like_option = 0;
+                        break;
+                    }
+                }
+                
+                if (looks_like_option) {
+                    /* If it's not a valid expiration option, it's a syntax error */
+                    if (strcasecmp(second_last_arg, "EX") && strcasecmp(second_last_arg, "PX") &&
+                        strcasecmp(second_last_arg, "EXAT") && strcasecmp(second_last_arg, "PXAT")) {
+                        addReplyErrorFormat(c, "syntax error");
+                        return C_ERR;
+                    }
+                }
+            }
+        }
+    }
+
+    if (exp->has_expiration) {
+        exp->expire_obj = c->argv[c->argc - 1];
+
+        /* Check for conflicting expiration options by scanning backwards */
+        for (int i = c->argc - 4; i >= 1; i -= 2) {
+            char *prev_opt = c->argv[i]->ptr;
+            if (!strcasecmp(prev_opt, "EX") || !strcasecmp(prev_opt, "PX") ||
+                !strcasecmp(prev_opt, "EXAT") || !strcasecmp(prev_opt, "PXAT")) {
+                addReplyErrorFormat(c, "syntax error");
+                return C_ERR;
+            }
+        }
+    }
+
+    return C_OK;
+}
+
+void msetGenericCommand(client *c, int nx, robj *expire, int unit, int flags) {
+    int j, kv_pairs_end;
+    long long milliseconds = 0;
+
+    /* Calculate where key-value pairs end (before expiration options) */
+    kv_pairs_end = expire ? c->argc - 2 : c->argc;
+
+    /* Validate key-value pairs count */
+    if (((kv_pairs_end - 1) % 2) != 0) {
         addReplyErrorArity(c);
+        return;
+    }
+
+    /* Parse and validate expiration if provided */
+    if (expire && getExpireMillisecondsOrReply(c, expire, flags, unit, &milliseconds) != C_OK) {
         return;
     }
 
     /* Handle the NX flag. The MSETNX semantic is to return zero and don't
      * set anything if at least one key already exists. */
     if (nx) {
-        for (j = 1; j < c->argc; j += 2) {
+        for (j = 1; j < kv_pairs_end; j += 2) {
             if (lookupKeyWrite(c->db, c->argv[j]) != NULL) {
                 addReply(c, shared.czero);
                 return;
@@ -532,27 +641,107 @@ void msetGenericCommand(client *c, int nx) {
         }
     }
 
-    int setkey_flags = nx ? SETKEY_DOESNT_EXIST : 0;
-    for (j = 1; j < c->argc; j += 2) {
+    /* If the timestamp has already expired, don't set the keys */
+    if (expire && checkAlreadyExpired(milliseconds)) {
+        addReply(c, nx ? shared.czero : shared.ok);
+        return;
+    }
+
+    /* Set flags for atomic key setting */
+    int setkey_flags = (nx ? SETKEY_DOESNT_EXIST : 0) | (expire ? SETKEY_KEEPTTL : 0);
+
+    /* Set all key-value pairs atomically */
+    for (j = 1; j < kv_pairs_end; j += 2) {
         robj *val = tryObjectEncoding(c->argv[j + 1]);
         setKey(c, c->db, c->argv[j], &val, setkey_flags);
+
+        if (expire) {
+            val = setExpire(c, c->db, c->argv[j], milliseconds);
+            c->argv[j + 1] = val;
+        }
+
         incrRefCount(val);
         c->argv[j + 1] = val;
         notifyKeyspaceEvent(NOTIFY_STRING, "set", c->argv[j], c->db->id);
-        /* In MSETNX, It could be that we're overriding the same key, we can't be sure it doesn't exist. */
-        if (nx)
-            setkey_flags = SETKEY_ADD_OR_UPDATE;
+
+        /* After first iteration in MSETNX, allow updates */
+        if (nx) setkey_flags = SETKEY_ADD_OR_UPDATE;
     }
-    server.dirty += (c->argc - 1) / 2;
+
+    server.dirty += (kv_pairs_end - 1) / 2;
+
+    /* Handle expiration notifications and replication */
+    if (expire) {
+        /* Notify expiration events for all keys */
+        for (j = 1; j < kv_pairs_end; j += 2) {
+            notifyKeyspaceEvent(NOTIFY_GENERIC, "expire", c->argv[j], c->db->id);
+        }
+
+        /* Prepare replication with absolute timestamp for consistency */
+        if (!(flags & ARGS_PXAT)) {
+            robj *milliseconds_obj = createStringObjectFromLongLong(milliseconds);
+
+            /* Safely replace expiration arguments */
+            decrRefCount(c->argv[c->argc - 2]);
+            decrRefCount(c->argv[c->argc - 1]);
+            c->argv[c->argc - 2] = shared.pxat;
+            c->argv[c->argc - 1] = milliseconds_obj;
+            incrRefCount(shared.pxat);
+        }
+    }
+
     addReply(c, nx ? shared.cone : shared.ok);
 }
 
+/* Centralized validation for MSET command arguments */
+static int validateMsetCommand(client *c, mset_expiration_t *exp_info) {
+    /* Basic validation - need at least key and value */
+    if (c->argc < 3) {
+        addReplyErrorArity(c);
+        return C_ERR;
+    }
+
+    /* Parse expiration arguments */
+    if (parseMsetExpiration(c, exp_info) != C_OK) {
+        return C_ERR;
+    }
+
+    /* Calculate key-value pairs end position */
+    int kv_pairs_end = exp_info->has_expiration ? c->argc - 2 : c->argc;
+
+    /* Validate key-value pairs count */
+    if (((kv_pairs_end - 1) % 2) != 0) {
+        addReplyErrorArity(c);
+        return C_ERR;
+    }
+
+    /* Handle incomplete expiration syntax */
+    if (c->argc == 4) {
+        char *last_arg = c->argv[c->argc - 1]->ptr;
+        if (!strcasecmp(last_arg, "EX") || !strcasecmp(last_arg, "PX") ||
+            !strcasecmp(last_arg, "EXAT") || !strcasecmp(last_arg, "PXAT")) {
+            addReplyErrorFormat(c, "syntax error");
+            return C_ERR;
+        }
+    }
+
+    return C_OK;
+}
+
 void msetCommand(client *c) {
-    msetGenericCommand(c, 0);
+    mset_expiration_t exp_info;
+
+    /* Centralized validation */
+    if (validateMsetCommand(c, &exp_info) != C_OK) {
+        return;
+    }
+
+    /* Call generic implementation with parsed parameters */
+    msetGenericCommand(c, 0, exp_info.expire_obj, exp_info.unit, exp_info.flags);
 }
 
 void msetnxCommand(client *c) {
-    msetGenericCommand(c, 1);
+    msetGenericCommand(c, 1, NULL, 0, ARGS_NO_FLAGS);
 }
 
 void incrDecrCommand(client *c, long long incr) {

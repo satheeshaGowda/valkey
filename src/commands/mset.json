@@ -1,10 +1,16 @@
 {
     "MSET": {
-        "summary": "Atomically creates or modifies the string values of one or more keys.",
+        "summary": "Atomically creates or modifies the string values of one or more keys, optionally setting a shared expiration time.",
         "complexity": "O(N) where N is the number of keys to set.",
         "group": "string",
         "since": "1.0.1",
         "arity": -3,
+        "history": [
+            [
+                "9.1.0",
+                "Added the `EX`, `PX`, `EXAT` and `PXAT` expiration options."
+            ]
+        ],
         "function": "msetCommand",
         "command_flags": [
             "WRITE",
@@ -54,6 +60,37 @@
                     {
                         "name": "value",
                         "type": "string"
+                    }
+                ]
+            },
+            {
+                "name": "expiration",
+                "type": "oneof",
+                "optional": true,
+                "arguments": [
+                    {
+                        "name": "seconds",
+                        "type": "integer",
+                        "token": "EX",
+                        "since": "9.1.0"
+                    },
+                    {
+                        "name": "milliseconds",
+                        "type": "integer",
+                        "token": "PX",
+                        "since": "9.1.0"
+                    },
+                    {
+                        "name": "unix-time-seconds",
+                        "type": "unix-time",
+                        "token": "EXAT",
+                        "since": "9.1.0"
+                    },
+                    {
+                        "name": "unix-time-milliseconds",
+                        "type": "unix-time",
+                        "token": "PXAT",
+                        "since": "9.1.0"
                     }
                 ]
             }

@@ -11363,7 +11363,9 @@ struct COMMAND_ARG MGET_Args[] = {
 
 #ifndef SKIP_CMD_HISTORY_TABLE
 /* MSET history */
-#define MSET_History NULL
+commandHistory MSET_History[] = {
+{"9.1.0","Added the `EX`, `PX`, `EXAT` and `PXAT` expiration options."},
+};
 #endif
 
 #ifndef SKIP_CMD_TIPS_TABLE
@@ -11387,9 +11389,18 @@ struct COMMAND_ARG MSET_data_Subargs[] = {
 {MAKE_ARG("value",ARG_TYPE_STRING,-1,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
 };
 
+/* MSET expiration argument table */
+struct COMMAND_ARG MSET_expiration_Subargs[] = {
+{MAKE_ARG("seconds",ARG_TYPE_INTEGER,-1,"EX",NULL,"9.1.0",CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("milliseconds",ARG_TYPE_INTEGER,-1,"PX",NULL,"9.1.0",CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("unix-time-seconds",ARG_TYPE_UNIX_TIME,-1,"EXAT",NULL,"9.1.0",CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("unix-time-milliseconds",ARG_TYPE_UNIX_TIME,-1,"PXAT",NULL,"9.1.0",CMD_ARG_NONE,0,NULL)},
+};
+
 /* MSET argument table */
 struct COMMAND_ARG MSET_Args[] = {
 {MAKE_ARG("data",ARG_TYPE_BLOCK,-1,NULL,NULL,NULL,CMD_ARG_MULTIPLE,2,NULL),.subargs=MSET_data_Subargs},
+{MAKE_ARG("expiration",ARG_TYPE_ONEOF,-1,NULL,NULL,NULL,CMD_ARG_OPTIONAL,4,NULL),.subargs=MSET_expiration_Subargs},
 };
 
 /********** MSETNX ********************/
@@ -11976,7 +11987,7 @@ struct COMMAND_STRUCT serverCommandTable[] = {
 {MAKE_CMD("incrbyfloat","Increment the floating point value of a key by a number. Uses 0 as initial value if the key doesn't exist.","O(1)","2.6.0",CMD_DOC_NONE,NULL,NULL,"string",COMMAND_GROUP_STRING,INCRBYFLOAT_History,0,INCRBYFLOAT_Tips,0,incrbyfloatCommand,3,CMD_WRITE|CMD_DENYOOM|CMD_FAST,ACL_CATEGORY_STRING,INCRBYFLOAT_Keyspecs,1,NULL,2),.args=INCRBYFLOAT_Args},
 {MAKE_CMD("lcs","Finds the longest common substring.","O(N*M) where N and M are the lengths of s1 and s2, respectively","7.0.0",CMD_DOC_NONE,NULL,NULL,"string",COMMAND_GROUP_STRING,LCS_History,0,LCS_Tips,0,lcsCommand,-3,CMD_READONLY,ACL_CATEGORY_STRING,LCS_Keyspecs,1,NULL,6),.args=LCS_Args},
 {MAKE_CMD("mget","Atomically returns the string values of one or more keys.","O(N) where N is the number of keys to retrieve.","1.0.0",CMD_DOC_NONE,NULL,NULL,"string",COMMAND_GROUP_STRING,MGET_History,0,MGET_Tips,1,mgetCommand,-2,CMD_READONLY|CMD_FAST,ACL_CATEGORY_STRING,MGET_Keyspecs,1,NULL,1),.args=MGET_Args},
-{MAKE_CMD("mset","Atomically creates or modifies the string values of one or more keys.","O(N) where N is the number of keys to set.","1.0.1",CMD_DOC_NONE,NULL,NULL,"string",COMMAND_GROUP_STRING,MSET_History,0,MSET_Tips,2,msetCommand,-3,CMD_WRITE|CMD_DENYOOM,ACL_CATEGORY_STRING,MSET_Keyspecs,1,NULL,1),.args=MSET_Args},
+{MAKE_CMD("mset","Atomically creates or modifies the string values of one or more keys, optionally setting a shared expiration time.","O(N) where N is the number of keys to set.","1.0.1",CMD_DOC_NONE,NULL,NULL,"string",COMMAND_GROUP_STRING,MSET_History,1,MSET_Tips,2,msetCommand,-3,CMD_WRITE|CMD_DENYOOM,ACL_CATEGORY_STRING,MSET_Keyspecs,1,NULL,2),.args=MSET_Args},
 {MAKE_CMD("msetnx","Atomically modifies the string values of one or more keys only when all keys don't exist.","O(N) where N is the number of keys to set.","1.0.1",CMD_DOC_NONE,NULL,NULL,"string",COMMAND_GROUP_STRING,MSETNX_History,0,MSETNX_Tips,0,msetnxCommand,-3,CMD_WRITE|CMD_DENYOOM,ACL_CATEGORY_STRING,MSETNX_Keyspecs,1,NULL,1),.args=MSETNX_Args},
 {MAKE_CMD("psetex","Sets both string value and expiration time in milliseconds of a key. The key is created if it doesn't exist.","O(1)","2.6.0",CMD_DOC_DEPRECATED,"`SET` with the `PX` argument","2.6.12","string",COMMAND_GROUP_STRING,PSETEX_History,0,PSETEX_Tips,0,psetexCommand,4,CMD_WRITE|CMD_DENYOOM,ACL_CATEGORY_STRING,PSETEX_Keyspecs,1,NULL,3),.args=PSETEX_Args},
 {MAKE_CMD("set","Sets the string value of a key, ignoring its type. The key is created if it doesn't exist.","O(1)","1.0.0",CMD_DOC_NONE,NULL,NULL,"string",COMMAND_GROUP_STRING,SET_History,5,SET_Tips,0,setCommand,-3,CMD_WRITE|CMD_DENYOOM,ACL_CATEGORY_STRING,SET_Keyspecs,1,setGetKeys,5),.args=SET_Args},
